@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS payments (
 CREATE TABLE IF NOT EXISTS approval_requests (
     id                  UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     thread_id           TEXT        NOT NULL,
+    trace_id            TEXT,
     agent_id            TEXT        NOT NULL,
     user_id             TEXT        NOT NULL,
     tool_name           TEXT        NOT NULL,
@@ -112,11 +113,14 @@ CREATE INDEX IF NOT EXISTS idx_approval_requests_user_id    ON approval_requests
 CREATE INDEX IF NOT EXISTS idx_approval_requests_thread_id  ON approval_requests(thread_id);
 CREATE INDEX IF NOT EXISTS idx_approval_requests_created_at ON approval_requests(created_at DESC);
 
-CREATE INDEX IF NOT EXISTS idx_audit_events_trace_id   ON audit_events(trace_id);
-CREATE INDEX IF NOT EXISTS idx_audit_events_user_id    ON audit_events(user_id);
-CREATE INDEX IF NOT EXISTS idx_audit_events_agent_id   ON audit_events(agent_id);
-CREATE INDEX IF NOT EXISTS idx_audit_events_decision   ON audit_events(decision);
-CREATE INDEX IF NOT EXISTS idx_audit_events_created_at ON audit_events(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_events_trace_id    ON audit_events(trace_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_user_id     ON audit_events(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_agent_id    ON audit_events(agent_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_decision    ON audit_events(decision);
+CREATE INDEX IF NOT EXISTS idx_audit_events_action_type ON audit_events(action_type);
+CREATE INDEX IF NOT EXISTS idx_audit_events_created_at  ON audit_events(created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_approval_requests_trace_id ON approval_requests(trace_id);
 
 -- ─── Least-Privilege Grants ─────────────────────────────────────────────────
 

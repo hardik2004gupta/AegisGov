@@ -105,6 +105,7 @@ class ApprovalRequest(Base):
         PG_UUID(as_uuid=True), primary_key=True, default=uuid4
     )
     thread_id: Mapped[str] = mapped_column(String, nullable=False)
+    trace_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     agent_id: Mapped[str] = mapped_column(String, nullable=False)
     user_id: Mapped[str] = mapped_column(String, nullable=False)
     tool_name: Mapped[str] = mapped_column(String, nullable=False)

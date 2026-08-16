@@ -191,13 +191,13 @@ async def test_delete_customer_always_triggers_hitl() -> None:
         user_roles=["admin"],
     )
 
-    with patch("app.governance.gateway.policy_service") as mock_svc:
+    with patch("app.governance.gateway.policy_service") as mock_svc, \
+         patch("app.governance.audit.audit_service.record", new=AsyncMock()):
         mock_svc.allow_tool_execution = AsyncMock(
             return_value=PolicyResult(allow=True, require_human_approval=True, reason="requires hitl")
         )
         # Mock _create_approval so we don't need real DB
         gw._create_approval = AsyncMock(return_value=uuid4())
-        gw._write_audit = AsyncMock()
 
         result = await gw.execute(proposal, state, db)
 
@@ -214,12 +214,12 @@ async def test_issue_refund_over_500_triggers_hitl() -> None:
     )
     db = _make_mock_db()
 
-    with patch("app.governance.gateway.policy_service") as mock_svc:
+    with patch("app.governance.gateway.policy_service") as mock_svc, \
+         patch("app.governance.audit.audit_service.record", new=AsyncMock()):
         mock_svc.allow_tool_execution = AsyncMock(
             return_value=PolicyResult(allow=True, require_human_approval=True, reason="large amount")
         )
         gw._create_approval = AsyncMock(return_value=uuid4())
-        gw._write_audit = AsyncMock()
 
         result = await gw.execute(proposal, _make_state(), db)
 
@@ -238,7 +238,7 @@ async def test_issue_refund_under_500_no_hitl_mocked() -> None:
     # Mock handler execution to avoid DB
     with patch("app.governance.gateway.policy_service") as mock_svc, \
          patch.object(gw, "_execute_with_role", new=AsyncMock(return_value={"status": "REFUNDED"})), \
-         patch.object(gw, "_write_audit", new=AsyncMock()):
+         patch("app.governance.audit.audit_service.record", new=AsyncMock()):
         mock_svc.allow_tool_execution = AsyncMock(
             return_value=PolicyResult(allow=True, require_human_approval=False, reason="allowed")
         )

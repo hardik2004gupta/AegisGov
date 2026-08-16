@@ -35,7 +35,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import ToolProposal
-from app.db.models import ApprovalRequest, AuditEvent
+from app.db.models import ApprovalRequest
+from app.governance.audit import Decision, EventType, audit_service
 from app.governance.middleware import check_runtime_limits
 from app.governance.policy import PolicyResult, policy_service
 from app.governance.risk import RiskLevel, classify_risk, requires_hitl
@@ -104,7 +105,12 @@ class SecureToolGateway:
         if entry is None:
             reason = f"Tool '{tool_name}' is not registered — INVARIANT 7"
             logger.warning("Gateway DENIED unregistered tool=%s trace_id=%s", tool_name, trace_id)
-            await self._write_audit(db, trace_id, user_id, agent_id, "registry_lookup", "DENIED", reason)
+            await audit_service.record(
+                db,
+                trace_id=trace_id, user_id=user_id, agent_id=agent_id,
+                action_type=EventType.TOOL_UNKNOWN, decision=Decision.DENIED, reason=reason,
+                payload={"tool": tool_name},
+            )
             return GatewayResult(decision="DENIED", reason=reason)
 
         # ── Stage 3: Pydantic Validation ──────────────────────────────────────
@@ -114,7 +120,12 @@ class SecureToolGateway:
         except ValidationError as exc:
             reason = f"Parameter validation failed: {exc}"
             logger.warning("Gateway DENIED validation error tool=%s trace_id=%s", tool_name, trace_id)
-            await self._write_audit(db, trace_id, user_id, agent_id, "pydantic_validation", "DENIED", reason)
+            await audit_service.record(
+                db,
+                trace_id=trace_id, user_id=user_id, agent_id=agent_id,
+                action_type=EventType.TOOL_VALIDATION_DENIED, decision=Decision.DENIED, reason=reason,
+                payload={"tool": tool_name},
+            )
             return GatewayResult(decision="DENIED", reason=reason)
 
         validated_args = validated.model_dump()
@@ -124,7 +135,12 @@ class SecureToolGateway:
         if limit_result:
             reason = limit_result.get("block_reason", "Runtime budget exceeded")
             logger.warning("Gateway BLOCKED runtime limit tool=%s trace_id=%s", tool_name, trace_id)
-            await self._write_audit(db, trace_id, user_id, agent_id, "runtime_safety", "BLOCKED", reason)
+            await audit_service.record(
+                db,
+                trace_id=trace_id, user_id=user_id, agent_id=agent_id,
+                action_type=EventType.RUNTIME_LIMIT_BLOCKED, decision=Decision.BLOCKED, reason=reason,
+                payload={"tool": tool_name},
+            )
             return GatewayResult(decision="BLOCKED", reason=reason)
 
         # ── Stage 5: OPA Authorization ────────────────────────────────────────
@@ -140,7 +156,12 @@ class SecureToolGateway:
         if not opa_result.allow:
             reason = f"OPA denied: {opa_result.reason}"
             logger.info("Gateway DENIED OPA tool=%s trace_id=%s", tool_name, trace_id)
-            await self._write_audit(db, trace_id, user_id, agent_id, "opa_authorization", "DENIED", reason)
+            await audit_service.record(
+                db,
+                trace_id=trace_id, user_id=user_id, agent_id=agent_id,
+                action_type=EventType.POLICY_DENIED, decision=Decision.DENIED, reason=reason,
+                payload={"tool": tool_name, "roles": user_roles},
+            )
             return GatewayResult(decision="DENIED", reason=reason)
 
         # ── Stage 6: Risk Classification ──────────────────────────────────────
@@ -153,16 +174,18 @@ class SecureToolGateway:
             approval_id = await self._create_approval(
                 db=db,
                 thread_id=state["thread_id"],
+                trace_id=trace_id,
                 agent_id=agent_id,
                 user_id=user_id,
                 tool_name=tool_name,
                 arguments=validated_args,
                 risk_level=risk_level,
-                trace_id=trace_id,
             )
-            await self._write_audit(
-                db, trace_id, user_id, agent_id, "hitl_required", "PENDING",
-                f"Human approval required for {tool_name} (risk={risk_level})",
+            await audit_service.record(
+                db,
+                trace_id=trace_id, user_id=user_id, agent_id=agent_id,
+                action_type=EventType.APPROVAL_CREATED, decision=Decision.PENDING,
+                reason=f"Human approval required for {tool_name} (risk={risk_level})",
                 payload={"tool": tool_name, "risk": risk_level, "approval_id": str(approval_id)},
             )
             logger.info(
@@ -185,21 +208,33 @@ class SecureToolGateway:
         except ValueError as exc:
             reason = str(exc)
             logger.warning("Gateway execution error tool=%s trace_id=%s: %s", tool_name, trace_id, reason)
-            await self._write_audit(db, trace_id, user_id, agent_id, "tool_execution", "DENIED", reason)
+            await audit_service.record(
+                db,
+                trace_id=trace_id, user_id=user_id, agent_id=agent_id,
+                action_type=EventType.TOOL_EXECUTION_FAILED, decision=Decision.DENIED, reason=reason,
+                payload={"tool": tool_name, "risk": risk_level},
+            )
             return GatewayResult(decision="DENIED", reason=reason)
         except Exception as exc:
             reason = f"Execution error: {exc}"
             logger.error("Gateway unexpected error tool=%s trace_id=%s: %s", tool_name, trace_id, exc)
-            await self._write_audit(db, trace_id, user_id, agent_id, "tool_execution", "DENIED", reason)
+            await audit_service.record(
+                db,
+                trace_id=trace_id, user_id=user_id, agent_id=agent_id,
+                action_type=EventType.TOOL_EXECUTION_FAILED, decision=Decision.DENIED, reason=reason,
+                payload={"tool": tool_name, "risk": risk_level},
+            )
             return GatewayResult(decision="DENIED", reason=reason)
 
         # ── Stage 9: Result Sanitization (handlers return clean dicts already)
 
         # ── Stage 10: Audit ───────────────────────────────────────────────────
         elapsed_ms = (time.monotonic() - start) * 1000
-        await self._write_audit(
-            db, trace_id, user_id, agent_id, "tool_execution", "ALLOWED",
-            f"Executed {tool_name} successfully (risk={risk_level})",
+        await audit_service.record(
+            db,
+            trace_id=trace_id, user_id=user_id, agent_id=agent_id,
+            action_type=EventType.TOOL_EXECUTION_COMPLETED, decision=Decision.ALLOWED,
+            reason=f"Executed {tool_name} successfully (risk={risk_level})",
             payload={
                 "tool": tool_name,
                 "risk": risk_level,
@@ -237,6 +272,7 @@ class SecureToolGateway:
         The caller (approval API) is responsible for checking status==APPROVED.
         """
         tool_name = approval.tool_name
+        trace_id = approval.trace_id or f"approval:{approval.id}"
 
         # Re-verify tool is still registered (could have been removed)
         entry = TOOL_REGISTRY.get(tool_name)
@@ -257,20 +293,20 @@ class SecureToolGateway:
         target_role = entry["target_db_role"]
         result = await self._execute_with_role(db, target_role, handler, validated_args)
 
-        # Audit the approved execution
-        await self._write_audit(
-            db=db,
-            trace_id=f"approval:{approval.id}",
+        await audit_service.record(
+            db,
+            trace_id=trace_id,
             user_id=approval.user_id,
             agent_id=approval.agent_id,
-            action_type="approved_execution",
-            decision="ALLOWED",
+            action_type=EventType.TOOL_EXECUTION_COMPLETED,
+            decision=Decision.ALLOWED,
             reason=f"Executed after HITL approval by {approver_id}",
             payload={
                 "tool": tool_name,
                 "approval_id": str(approval.id),
                 "approver": approver_id,
                 "risk": approval.risk_level,
+                "role_used": target_role,
             },
         )
 
@@ -299,16 +335,17 @@ class SecureToolGateway:
         self,
         db: AsyncSession,
         thread_id: str,
+        trace_id: str,
         agent_id: str,
         user_id: str,
         tool_name: str,
         arguments: dict,
         risk_level: str,
-        trace_id: str,
     ) -> uuid.UUID:
         """Persist a pending approval request to PostgreSQL."""
         approval = ApprovalRequest(
             thread_id=thread_id,
+            trace_id=trace_id,
             agent_id=agent_id,
             user_id=user_id,
             tool_name=tool_name,
@@ -320,34 +357,6 @@ class SecureToolGateway:
         await db.commit()
         # With expire_on_commit=False, approval.id is accessible without refresh
         return approval.id
-
-    async def _write_audit(
-        self,
-        db: AsyncSession,
-        trace_id: str,
-        user_id: str,
-        agent_id: str,
-        action_type: str,
-        decision: str,
-        reason: str,
-        payload: dict | None = None,
-    ) -> None:
-        """Write an audit event to PostgreSQL. Never log tokens or credentials."""
-        try:
-            event = AuditEvent(
-                trace_id=trace_id,
-                user_id=user_id,
-                agent_id=agent_id,
-                action_type=action_type,
-                decision=decision,
-                reason=reason,
-                payload=payload or {},
-            )
-            db.add(event)
-            await db.commit()
-        except Exception as exc:
-            # Audit failure must never prevent the gateway result from returning
-            logger.error("Failed to write audit event trace_id=%s: %s", trace_id, exc)
 
 
 # Module-level singleton

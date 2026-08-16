@@ -46,8 +46,8 @@ Eight invariants enforced at all times (see `CLAUDE.md §8`):
 | 0 | Engineering contract (`CLAUDE.md`) | ✅ Complete |
 | 1 | Foundation & Infrastructure | ✅ Complete |
 | 2 | Identity + LangGraph agent runtime | ✅ Complete |
-| 3 | Secure Tool Gateway + OPA rules | Pending |
-| 4 | Audit + observability | Pending |
+| 3 | Secure Tool Gateway + OPA rules | ✅ Complete |
+| 4 | Audit + Observability APIs | ✅ Complete |
 | 5 | Production UI | Pending |
 
 ---
@@ -99,6 +99,21 @@ cd frontend
 npm install --legacy-peer-deps
 npm run dev
 ```
+
+---
+
+## API reference
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Health check with dependency status (postgres, opa, keycloak, langfuse) |
+| POST | `/api/v1/agent/run` | Submit a message to the agent runtime |
+| GET | `/api/v1/governance/approvals` | List approvals (filter: status, risk_level, agent_id, user_id) |
+| GET | `/api/v1/governance/approvals/{id}` | Get a specific approval |
+| POST | `/api/v1/governance/approvals/{id}/resolve` | Approve or reject (admin only) |
+| GET | `/api/v1/audit` | List audit events (filter: trace_id, user_id, agent_id, decision, action_type) |
+| GET | `/api/v1/audit/{trace_id}` | Complete governance timeline for a trace |
+| GET | `/api/v1/runtime/status` | Aggregate decision counts, approval stats, configured limits |
 
 ---
 

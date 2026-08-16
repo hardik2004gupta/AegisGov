@@ -56,18 +56,33 @@ def detect_injection(text: str) -> str | None:
     return None
 
 
-def check_input_guardrails(state: AegisState) -> dict[str, Any]:
+async def check_input_guardrails(state: AegisState) -> dict[str, Any]:
     """LangGraph node: scan user input for prompt injection before any execution."""
     reason = detect_injection(state["message"])
     if reason:
-        logger.warning(
-            "Input blocked [%s] trace_id=%s",
-            reason,
-            state["trace_id"],
-        )
+        block_reason = f"Prompt injection detected: {reason}"
+        logger.warning("Input blocked [%s] trace_id=%s", reason, state["trace_id"])
+
+        try:
+            from app.db.session import AsyncSessionLocal
+            from app.governance.audit import Decision, EventType, audit_service
+            async with AsyncSessionLocal() as db:
+                await audit_service.record(
+                    db,
+                    trace_id=state["trace_id"],
+                    user_id=state["user_id"],
+                    agent_id="system",
+                    action_type=EventType.INPUT_BLOCKED,
+                    decision=Decision.BLOCKED,
+                    reason=block_reason,
+                    payload={},
+                )
+        except Exception as exc:
+            logger.error("Failed to write INPUT_BLOCKED audit trace_id=%s: %s", state["trace_id"], exc)
+
         return {
             "governance_status": "BLOCKED",
-            "block_reason": f"Prompt injection detected: {reason}",
+            "block_reason": block_reason,
             "status": "BLOCKED",
             "output": "Your request was blocked by the security policy.",
         }

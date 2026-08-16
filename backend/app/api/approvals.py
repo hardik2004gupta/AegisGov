@@ -2,7 +2,7 @@
 Human-in-the-Loop Approval Endpoints — CLAUDE.md §15, §19
 
 Implements the HITL approval workflow:
-    GET  /api/v1/governance/approvals            — list pending approvals
+    GET  /api/v1/governance/approvals            — list approvals (filterable)
     GET  /api/v1/governance/approvals/{id}        — get specific approval
     POST /api/v1/governance/approvals/{id}/resolve — approve or reject
 
@@ -27,8 +27,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.identity import AuthenticatedUser, get_current_user
-from app.db.models import ApprovalRequest, AuditEvent
+from app.db.models import ApprovalRequest
 from app.db.session import get_db
+from app.governance.audit import Decision, EventType, audit_service
 from app.governance.gateway import gateway
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,7 @@ router = APIRouter(prefix="/governance", tags=["governance"])
 class ApprovalResponse(BaseModel):
     approval_id: str
     thread_id: str
+    trace_id: Optional[str] = None
     agent_id: str
     user_id: str
     tool_name: str
@@ -74,6 +76,7 @@ def _approval_to_response(a: ApprovalRequest) -> ApprovalResponse:
     return ApprovalResponse(
         approval_id=str(a.id),
         thread_id=a.thread_id,
+        trace_id=a.trace_id,
         agent_id=a.agent_id,
         user_id=a.user_id,
         tool_name=a.tool_name,
@@ -85,34 +88,6 @@ def _approval_to_response(a: ApprovalRequest) -> ApprovalResponse:
         created_at=a.created_at.isoformat() if a.created_at else "",
         resolved_at=a.resolved_at.isoformat() if a.resolved_at else None,
     )
-
-
-async def _write_rejection_audit(
-    db: AsyncSession,
-    approval: ApprovalRequest,
-    approver_id: str,
-    reason: str,
-) -> None:
-    """Write audit event for a rejected approval. No tool execution occurs."""
-    try:
-        event = AuditEvent(
-            trace_id=f"approval:{approval.id}",
-            user_id=approval.user_id,
-            agent_id=approval.agent_id,
-            action_type="hitl_rejected",
-            decision="REJECTED",
-            reason=f"Rejected by {approver_id}: {reason}",
-            payload={
-                "tool": approval.tool_name,
-                "approval_id": str(approval.id),
-                "approver": approver_id,
-                "risk": approval.risk_level,
-            },
-        )
-        db.add(event)
-        await db.commit()
-    except Exception as exc:
-        logger.error("Failed to write rejection audit event approval_id=%s: %s", approval.id, exc)
 
 
 def _require_admin(user: AuthenticatedUser) -> None:
@@ -130,6 +105,10 @@ def _require_admin(user: AuthenticatedUser) -> None:
 @router.get("/approvals", response_model=list[ApprovalResponse])
 async def list_approvals(
     pending_only: bool = Query(default=True, description="When true, return only PENDING approvals"),
+    approval_status: Optional[str] = Query(default=None, alias="status", description="Filter by status: PENDING, APPROVED, REJECTED"),
+    risk_level: Optional[str] = Query(default=None, description="Filter by risk level: LOW, MEDIUM, HIGH, CRITICAL"),
+    agent_id: Optional[str] = Query(default=None, description="Filter by agent ID"),
+    user_id: Optional[str] = Query(default=None, description="Filter by user ID"),
     limit: int = Query(default=50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
     current_user: AuthenticatedUser = Depends(get_current_user),
@@ -137,11 +116,21 @@ async def list_approvals(
     """List approval requests, newest first.
 
     By default returns only PENDING approvals (those awaiting review).
-    Set pending_only=false to include APPROVED and REJECTED entries.
+    Use status= to filter by a specific status, or pending_only=false for all.
     """
     q = select(ApprovalRequest).order_by(ApprovalRequest.created_at.desc()).limit(limit)
-    if pending_only:
+
+    if approval_status:
+        q = q.where(ApprovalRequest.status == approval_status.upper())
+    elif pending_only:
         q = q.where(ApprovalRequest.status == "PENDING")
+
+    if risk_level:
+        q = q.where(ApprovalRequest.risk_level == risk_level.upper())
+    if agent_id:
+        q = q.where(ApprovalRequest.agent_id == agent_id)
+    if user_id:
+        q = q.where(ApprovalRequest.user_id == user_id)
 
     result = await db.execute(q)
     approvals = result.scalars().all()
@@ -201,6 +190,7 @@ async def resolve_approval(
         )
 
     approver_id = current_user.user_id
+    trace_id = approval.trace_id or f"approval:{approval.id}"
     now = datetime.now(timezone.utc)
 
     # ── REJECTED: INVARIANT 8 — no business data mutations ───────────────────
@@ -211,7 +201,21 @@ async def resolve_approval(
         approval.resolved_at = now
         await db.commit()
 
-        await _write_rejection_audit(db, approval, approver_id, body.resolution_reason)
+        await audit_service.record(
+            db,
+            trace_id=trace_id,
+            user_id=approval.user_id,
+            agent_id=approval.agent_id,
+            action_type=EventType.APPROVAL_REJECTED,
+            decision=Decision.REJECTED,
+            reason=f"Rejected by {approver_id}: {body.resolution_reason}",
+            payload={
+                "tool": approval.tool_name,
+                "approval_id": str(approval.id),
+                "approver": approver_id,
+                "risk": approval.risk_level,
+            },
+        )
 
         logger.info(
             "Approval REJECTED approval_id=%s tool=%s by=%s",
@@ -232,6 +236,22 @@ async def resolve_approval(
     approval.resolution_reason = body.resolution_reason
     approval.resolved_at = now
     await db.commit()
+
+    await audit_service.record(
+        db,
+        trace_id=trace_id,
+        user_id=approval.user_id,
+        agent_id=approval.agent_id,
+        action_type=EventType.APPROVAL_APPROVED,
+        decision=Decision.APPROVED,
+        reason=f"Approved by {approver_id}: {body.resolution_reason}",
+        payload={
+            "tool": approval.tool_name,
+            "approval_id": str(approval.id),
+            "approver": approver_id,
+            "risk": approval.risk_level,
+        },
+    )
 
     logger.info(
         "Approval APPROVED approval_id=%s tool=%s by=%s",

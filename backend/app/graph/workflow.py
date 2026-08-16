@@ -47,11 +47,12 @@ logger = logging.getLogger(__name__)
 # ─── Graph Nodes ──────────────────────────────────────────────────────────────
 
 
-def _identity_check_node(state: AegisState) -> dict[str, Any]:
+async def _identity_check_node(state: AegisState) -> dict[str, Any]:
     """Acknowledge that identity was verified at the API boundary.
 
     JWT was already validated by get_current_user; identity context
     (user_id, username, user_roles) is already present in state.
+    Writes IDENTITY_VERIFIED audit event.
     """
     logger.info(
         "Identity check — user=%s roles=%s trace_id=%s",
@@ -59,6 +60,23 @@ def _identity_check_node(state: AegisState) -> dict[str, Any]:
         state["user_roles"],
         state["trace_id"],
     )
+
+    try:
+        from app.governance.audit import Decision, EventType, audit_service
+        async with AsyncSessionLocal() as db:
+            await audit_service.record(
+                db,
+                trace_id=state["trace_id"],
+                user_id=state["user_id"],
+                agent_id="system",
+                action_type=EventType.IDENTITY_VERIFIED,
+                decision=Decision.ALLOWED,
+                reason=f"JWT verified for user {state['username']} roles={state['user_roles']}",
+                payload={"username": state["username"], "roles": state["user_roles"]},
+            )
+    except Exception as exc:
+        logger.error("Failed to write IDENTITY_VERIFIED audit trace_id=%s: %s", state["trace_id"], exc)
+
     return {}
 
 
@@ -97,6 +115,21 @@ async def _handoff_authz_node(state: AegisState) -> dict[str, Any]:
             state["trace_id"],
             result.reason,
         )
+        try:
+            from app.governance.audit import Decision, EventType, audit_service
+            async with AsyncSessionLocal() as db:
+                await audit_service.record(
+                    db,
+                    trace_id=state["trace_id"],
+                    user_id=state["user_id"],
+                    agent_id=state.get("agent_id") or "supervisor",
+                    action_type=EventType.AGENT_HANDOFF_DENIED,
+                    decision=Decision.DENIED,
+                    reason=reason,
+                    payload={"target_agent": target, "roles": state["user_roles"]},
+                )
+        except Exception as exc:
+            logger.error("Failed to write HANDOFF_DENIED audit trace_id=%s: %s", state["trace_id"], exc)
         return {
             "governance_status": "DENIED",
             "block_reason": reason,
@@ -110,6 +143,21 @@ async def _handoff_authz_node(state: AegisState) -> dict[str, Any]:
         target,
         state["trace_id"],
     )
+    try:
+        from app.governance.audit import Decision, EventType, audit_service
+        async with AsyncSessionLocal() as db:
+            await audit_service.record(
+                db,
+                trace_id=state["trace_id"],
+                user_id=state["user_id"],
+                agent_id=state.get("agent_id") or "supervisor",
+                action_type=EventType.AGENT_HANDOFF_ALLOWED,
+                decision=Decision.ALLOWED,
+                reason=f"Handoff to {target} authorized for roles {state['user_roles']}",
+                payload={"target_agent": target, "roles": state["user_roles"]},
+            )
+    except Exception as exc:
+        logger.error("Failed to write HANDOFF_ALLOWED audit trace_id=%s: %s", state["trace_id"], exc)
     return {"governance_status": "RUNNING"}
 
 
