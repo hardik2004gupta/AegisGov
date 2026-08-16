@@ -1,8 +1,17 @@
-// Typed API client for the AegisGov backend.
-// Phase 3: added approval/execution result types and governance fields.
+// Typed API client for the AegisGov backend — Phase 5.
+// All methods are strongly typed; no `any`.
 
-const BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+import type {
+  AgentRunResponse,
+  ApprovalItem,
+  AuditListResponse,
+  HealthResponse,
+  ResolveResponse,
+  RuntimeStatus,
+  TraceTimeline,
+} from "./types";
+
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE_URL}${path}`, {
@@ -10,61 +19,33 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (!res.ok) {
-    throw new Error(`API error ${res.status}: ${path}`);
+    let detail = "";
+    try {
+      const body = await res.json();
+      detail = body?.detail ?? "";
+    } catch {
+      /* ignore parse error */
+    }
+    throw new ApiError(res.status, path, detail);
   }
   return res.json() as Promise<T>;
 }
 
-// ── Agent run (Phase 3) ───────────────────────────────────────────────────────
-
-export interface GovernanceInfo {
-  identity_verified: boolean;
-  policy_decision: string;
-  risk_level?: string;
-  execution_time_ms?: number;
-  agent_id?: string;
-  agent_spiffe_id?: string;
+export class ApiError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly path: string,
+    public readonly detail: string,
+  ) {
+    super(detail || `API ${status}: ${path}`);
+    this.name = "ApiError";
+  }
 }
 
-export interface AgentProposal {
-  tool: string;
-  arguments: Record<string, unknown>;
-  reason?: string;
-}
+// ── Agent ─────────────────────────────────────────────────────────────────────
 
-export interface AgentInfo {
-  id: string;
-  spiffe_id?: string;
-  capabilities?: string[];
-}
-
-export type AgentRunStatus =
-  | "PROPOSAL_READY"
-  | "COMPLETED"
-  | "INTERRUPTED_PENDING_APPROVAL"
-  | "DENIED"
-  | "BLOCKED"
-  | "FAILED";
-
-export interface AgentRunResponse {
-  thread_id: string;
-  status: AgentRunStatus;
-  trace_id: string;
-  output?: string;
-  error?: string;
-  approval_id?: string;
-  execution_result?: Record<string, unknown>;
-  agent?: AgentInfo;
-  proposal?: AgentProposal;
-  governance: GovernanceInfo;
-}
-
-export const agentRun = {
-  submit: (
-    message: string,
-    threadId: string,
-    bearerToken: string,
-  ): Promise<AgentRunResponse> =>
+export const agent = {
+  run: (message: string, threadId: string, bearerToken: string): Promise<AgentRunResponse> =>
     request<AgentRunResponse>("/api/v1/agent/run", {
       method: "POST",
       headers: { Authorization: `Bearer ${bearerToken}` },
@@ -72,49 +53,28 @@ export const agentRun = {
     }),
 };
 
-// ── Health ────────────────────────────────────────────────────────────────────
+// ── Approvals ─────────────────────────────────────────────────────────────────
 
-export interface HealthResponse {
-  status: string;
-  service: string;
-  version: string;
-}
-
-export const health = {
-  get: () => request<HealthResponse>("/health"),
-};
-
-// ── Governance approvals (Phase 3) ────────────────────────────────────────────
-
-export type RiskLevel = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
-export type ApprovalStatus = "PENDING" | "APPROVED" | "REJECTED";
-
-export interface ApprovalItem {
-  approval_id: string;
-  thread_id: string;
-  agent_id: string;
-  user_id: string;
-  tool_name: string;
-  arguments: Record<string, unknown>;
-  risk_level: RiskLevel;
-  status: ApprovalStatus;
-  approved_by?: string;
-  resolution_reason?: string;
-  created_at: string;
-  resolved_at?: string;
-}
-
-export interface ResolveResponse {
-  approval_id: string;
-  decision: string;
-  tool_name: string;
-  execution_result?: Record<string, unknown>;
-  message: string;
+export interface ApprovalsListParams {
+  status?: string;
+  risk_level?: string;
+  agent_id?: string;
+  user_id?: string;
+  limit?: number;
+  pending_only?: boolean;
 }
 
 export const approvals = {
-  list: (pendingOnly = true): Promise<ApprovalItem[]> =>
-    request<ApprovalItem[]>(`/api/v1/governance/approvals?pending_only=${pendingOnly}`),
+  list: (params: ApprovalsListParams = {}): Promise<ApprovalItem[]> => {
+    const q = new URLSearchParams();
+    if (params.status)     q.set("status", params.status);
+    if (params.risk_level) q.set("risk_level", params.risk_level);
+    if (params.agent_id)   q.set("agent_id", params.agent_id);
+    if (params.user_id)    q.set("user_id", params.user_id);
+    if (params.limit)      q.set("limit", String(params.limit));
+    if (params.pending_only !== undefined) q.set("pending_only", String(params.pending_only));
+    return request<ApprovalItem[]>(`/api/v1/governance/approvals?${q}`);
+  },
 
   get: (id: string): Promise<ApprovalItem> =>
     request<ApprovalItem>(`/api/v1/governance/approvals/${id}`),
@@ -122,33 +82,64 @@ export const approvals = {
   resolve: (
     id: string,
     decision: "APPROVED" | "REJECTED",
-    reason: string,
+    resolution_reason: string,
     bearerToken: string,
   ): Promise<ResolveResponse> =>
     request<ResolveResponse>(`/api/v1/governance/approvals/${id}/resolve`, {
       method: "POST",
       headers: { Authorization: `Bearer ${bearerToken}` },
-      body: JSON.stringify({ decision, resolution_reason: reason }),
+      body: JSON.stringify({ decision, resolution_reason }),
     }),
 };
 
-// ── Audit events (Phase 4+) ───────────────────────────────────────────────────
+// ── Audit ─────────────────────────────────────────────────────────────────────
 
-export type AuditDecision = "ALLOWED" | "DENIED" | "BLOCKED" | "PENDING" | "APPROVED" | "REJECTED";
-
-export interface AuditEvent {
-  id: string;
-  trace_id: string;
-  user_id: string;
-  agent_id: string;
-  action_type: string;
-  decision: AuditDecision;
-  reason?: string;
-  payload: Record<string, unknown>;
-  created_at: string;
+export interface AuditListParams {
+  trace_id?: string;
+  user_id?: string;
+  agent_id?: string;
+  decision?: string;
+  action_type?: string;
+  limit?: number;
+  offset?: number;
 }
 
 export const audit = {
-  list: () => request<AuditEvent[]>("/api/v1/audit"),
-  get: (traceId: string) => request<AuditEvent[]>(`/api/v1/audit/${traceId}`),
+  list: (params: AuditListParams = {}): Promise<AuditListResponse> => {
+    const q = new URLSearchParams();
+    if (params.trace_id)    q.set("trace_id", params.trace_id);
+    if (params.user_id)     q.set("user_id", params.user_id);
+    if (params.agent_id)    q.set("agent_id", params.agent_id);
+    if (params.decision)    q.set("decision", params.decision);
+    if (params.action_type) q.set("action_type", params.action_type);
+    if (params.limit)       q.set("limit", String(params.limit));
+    if (params.offset)      q.set("offset", String(params.offset));
+    return request<AuditListResponse>(`/api/v1/audit?${q}`);
+  },
+
+  trace: (traceId: string): Promise<TraceTimeline> =>
+    request<TraceTimeline>(`/api/v1/audit/${traceId}`),
 };
+
+// ── Runtime ───────────────────────────────────────────────────────────────────
+
+export const runtime = {
+  status: (bearerToken?: string): Promise<RuntimeStatus> =>
+    request<RuntimeStatus>("/api/v1/runtime/status", bearerToken
+      ? { headers: { Authorization: `Bearer ${bearerToken}` } }
+      : {}),
+};
+
+// ── Health ────────────────────────────────────────────────────────────────────
+
+export const health = {
+  get: (): Promise<HealthResponse> => request<HealthResponse>("/health"),
+};
+
+// Re-export legacy names used in existing page.tsx to avoid breaking it during transition
+export const agentRun = {
+  submit: agent.run,
+};
+
+export type { AgentRunResponse, ApprovalItem, AuditListResponse, HealthResponse, ResolveResponse, RuntimeStatus, TraceTimeline };
+export type { AgentRunStatus, GovernanceInfo, AgentProposal, AgentInfo, AuditEvent, RiskLevel, ApprovalStatus, AuditDecision } from "./types";

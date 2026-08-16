@@ -48,7 +48,7 @@ Eight invariants enforced at all times (see `CLAUDE.md §8`):
 | 2 | Identity + LangGraph agent runtime | ✅ Complete |
 | 3 | Secure Tool Gateway + OPA rules | ✅ Complete |
 | 4 | Audit + Observability APIs | ✅ Complete |
-| 5 | Production UI | Pending |
+| 5 | Production UI | ✅ Complete |
 
 ---
 
@@ -99,6 +99,28 @@ cd frontend
 npm install --legacy-peer-deps
 npm run dev
 ```
+
+---
+
+## Frontend — Governance Dashboard
+
+Light-themed security operations console built with Next.js 14 + Tailwind CSS.
+
+| Page | Route | Description |
+|------|-------|-------------|
+| Governance Overview | `/overview` | Real-time metrics, recent activity, governance pipeline visualization, system health |
+| Agent Console | `/agent` | Submit agent requests; live governance inspector shows identity, policy, risk, approval, execution per request |
+| Approval Center | `/approvals` | HITL queue — review, approve, or reject CRITICAL/HIGH-value actions before they execute |
+| Audit Explorer | `/audit` | Paginated audit event table with filters; click any trace to open the full governance timeline |
+| Runtime Dashboard | `/runtime` | Aggregate decision counts, decision/approval distribution charts, safety limits, system health |
+
+Visual direction: modern light-themed operations console. Governance mechanics (Identity → Agent → Policy → Risk → Approval → Execution → Audit) are the visual language, not decoration.
+
+Shared components:
+- `Badge` — semantic status badges (ALLOWED/DENIED/BLOCKED/PENDING/APPROVED/REJECTED/risk levels)
+- `GovernancePipeline` — step-by-step pipeline with per-step state (idle/active/success/warning/denied/blocked)
+- `GovernanceTimeline` — chronological audit event timeline with icons, decisions, and payload details
+- `Skeleton` / `EmptyState` / `ErrorState` — consistent loading, empty, and error UI patterns
 
 ---
 
