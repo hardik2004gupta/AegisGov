@@ -1,0 +1,138 @@
+{
+  "id": "aegisgov",
+  "realm": "aegisgov",
+  "displayName": "AegisGov",
+  "displayNameHtml": "<strong>AegisGov</strong>",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": false,
+  "accessTokenLifespan": 300,
+  "roles": {
+    "realm": [
+      {
+        "id": "11111111-0000-0000-0000-000000000001",
+        "name": "analyst",
+        "description": "Read-only access to order information via Order Agent",
+        "composite": false,
+        "clientRole": false,
+        "containerId": "aegisgov"
+      },
+      {
+        "id": "22222222-0000-0000-0000-000000000002",
+        "name": "billing",
+        "description": "Access to orders, payments, and refund operations via Billing Agent",
+        "composite": false,
+        "clientRole": false,
+        "containerId": "aegisgov"
+      },
+      {
+        "id": "33333333-0000-0000-0000-000000000003",
+        "name": "admin",
+        "description": "Full access including destructive operations via Admin Agent",
+        "composite": false,
+        "clientRole": false,
+        "containerId": "aegisgov"
+      }
+    ]
+  },
+  "clients": [
+    {
+      "id": "aaaaaaaa-0000-0000-0000-000000000001",
+      "clientId": "aegisgov-backend",
+      "name": "AegisGov Backend",
+      "description": "Backend service — validates JWTs and performs OPA policy evaluation",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "dev-backend-secret",
+      "bearerOnly": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "protocol": "openid-connect",
+      "fullScopeAllowed": true
+    },
+    {
+      "id": "bbbbbbbb-0000-0000-0000-000000000002",
+      "clientId": "aegisgov-frontend",
+      "name": "AegisGov Frontend",
+      "description": "Next.js frontend — public OIDC client for user authentication",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "publicClient": true,
+      "bearerOnly": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "protocol": "openid-connect",
+      "redirectUris": [
+        "http://localhost:3000/*",
+        "http://frontend:3000/*"
+      ],
+      "webOrigins": [
+        "http://localhost:3000",
+        "http://frontend:3000"
+      ],
+      "fullScopeAllowed": true
+    }
+  ],
+  "users": [
+    {
+      "id": "cccccccc-0000-0000-0000-000000000001",
+      "username": "analyst_user",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "analyst@aegisgov.dev",
+      "firstName": "Alice",
+      "lastName": "Analyst",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Password1!",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["analyst"]
+    },
+    {
+      "id": "dddddddd-0000-0000-0000-000000000002",
+      "username": "billing_user",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "billing@aegisgov.dev",
+      "firstName": "Bob",
+      "lastName": "Billing",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Password1!",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["billing"]
+    },
+    {
+      "id": "eeeeeeee-0000-0000-0000-000000000003",
+      "username": "admin_user",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "admin@aegisgov.dev",
+      "firstName": "Carol",
+      "lastName": "Admin",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Password1!",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["admin"]
+    }
+  ]
+}

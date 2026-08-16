@@ -1,0 +1,68 @@
+# Environment — never commit secrets
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.tox/
+.venv/
+venv/
+env/
+pip-wheel-metadata/
+*.pyo
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+.mypy_cache/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Docker
+*.override.yml
+
+# Keys and credentials
+*.pem
+*.key
+*.p12
+*.pfx
+keycloak/data/
+
+# Logs
+*.log
+logs/
+
+# Compiled / build artifacts
+*.class
+*.jar
+
+# Temporary
+*.tmp
+*.bak
+.cache/

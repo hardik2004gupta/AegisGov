@@ -1,0 +1,118 @@
+services:
+
+  # ─── PostgreSQL 16 ────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: aegisgov-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-aegisgov}
+      POSTGRES_USER: ${POSTGRES_USER:-aegisgov}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-in-development}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./schema/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aegisgov} -d ${POSTGRES_DB:-aegisgov}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - aegisgov-net
+
+  # ─── OPA Policy Server ─────────────────────────────────────────────────────
+  opa:
+    image: openpolicyagent/opa:latest-debug
+    container_name: aegisgov-opa
+    command:
+      - "run"
+      - "--server"
+      - "--addr=0.0.0.0:8181"
+      - "--log-level=info"
+      - "--log-format=json"
+      - "/policies"
+    volumes:
+      - ./policy:/policies:ro
+    ports:
+      - "8181:8181"
+    restart: unless-stopped
+    networks:
+      - aegisgov-net
+
+  # ─── Keycloak Identity Server ──────────────────────────────────────────────
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0.3
+    container_name: aegisgov-keycloak
+    command: start-dev --import-realm
+    environment:
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-change-me-in-development}
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "false"
+      KC_LOG_LEVEL: INFO
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import:ro
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health/ready || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - aegisgov-net
+
+  # ─── AegisGov API (FastAPI) ────────────────────────────────────────────────
+  aegis_core:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: aegisgov-api
+    env_file:
+      - .env
+    environment:
+      # Override service hostnames for Docker networking
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-aegisgov}:${POSTGRES_PASSWORD:-change-me-in-development}@postgres:5432/${POSTGRES_DB:-aegisgov}
+      OPA_URL: http://opa:8181
+      KEYCLOAK_URL: http://keycloak:8080
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      opa:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - aegisgov-net
+
+  # ─── AegisGov Frontend (Next.js) ──────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: aegisgov-frontend
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_KEYCLOAK_URL: http://localhost:8080
+      NEXT_PUBLIC_KEYCLOAK_REALM: ${NEXT_PUBLIC_KEYCLOAK_REALM:-aegisgov}
+      NEXT_PUBLIC_KEYCLOAK_CLIENT_ID: ${NEXT_PUBLIC_KEYCLOAK_CLIENT_ID:-aegisgov-frontend}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - aegis_core
+    restart: unless-stopped
+    networks:
+      - aegisgov-net
+
+networks:
+  aegisgov-net:
+    driver: bridge
+
+volumes:
+  postgres_data:
