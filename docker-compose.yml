@@ -12,7 +12,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./schema/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
     ports:
-      - "5433:5432"
+      - "5434:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aegisgov} -d ${POSTGRES_DB:-aegisgov}"]
       interval: 10s

@@ -8,6 +8,7 @@ from app.api.agent import router as agent_router
 from app.api.approvals import router as approvals_router
 from app.api.audit import router as audit_router
 from app.api.health import router as health_router
+from app.api.runtime import router as runtime_router
 from app.core.config import settings
 
 logging.basicConfig(
@@ -56,3 +57,4 @@ app.include_router(health_router)
 app.include_router(agent_router, prefix="/api/v1")
 app.include_router(approvals_router, prefix="/api/v1")
 app.include_router(audit_router, prefix="/api/v1")
+app.include_router(runtime_router, prefix="/api/v1")

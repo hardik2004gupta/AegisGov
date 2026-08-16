@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS payments (
 CREATE TABLE IF NOT EXISTS approval_requests (
     id                  UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     thread_id           TEXT        NOT NULL,
+    trace_id            TEXT,
     agent_id            TEXT        NOT NULL,
     user_id             TEXT        NOT NULL,
     tool_name           TEXT        NOT NULL,
@@ -112,11 +113,14 @@ CREATE INDEX IF NOT EXISTS idx_approval_requests_user_id    ON approval_requests
 CREATE INDEX IF NOT EXISTS idx_approval_requests_thread_id  ON approval_requests(thread_id);
 CREATE INDEX IF NOT EXISTS idx_approval_requests_created_at ON approval_requests(created_at DESC);
 
-CREATE INDEX IF NOT EXISTS idx_audit_events_trace_id   ON audit_events(trace_id);
-CREATE INDEX IF NOT EXISTS idx_audit_events_user_id    ON audit_events(user_id);
-CREATE INDEX IF NOT EXISTS idx_audit_events_agent_id   ON audit_events(agent_id);
-CREATE INDEX IF NOT EXISTS idx_audit_events_decision   ON audit_events(decision);
-CREATE INDEX IF NOT EXISTS idx_audit_events_created_at ON audit_events(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_events_trace_id    ON audit_events(trace_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_user_id     ON audit_events(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_agent_id    ON audit_events(agent_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_decision    ON audit_events(decision);
+CREATE INDEX IF NOT EXISTS idx_audit_events_action_type ON audit_events(action_type);
+CREATE INDEX IF NOT EXISTS idx_audit_events_created_at  ON audit_events(created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_approval_requests_trace_id ON approval_requests(trace_id);
 
 -- ─── Least-Privilege Grants ─────────────────────────────────────────────────
 
@@ -130,9 +134,9 @@ GRANT SELECT ON orders, payments TO billing_reader;
 GRANT SELECT ON orders, payments TO billing_writer;
 GRANT UPDATE ON payments TO billing_writer;
 
--- admin_writer: delete_customer tool
-GRANT SELECT ON customers, orders TO admin_writer;
-GRANT DELETE ON customers TO admin_writer;
+-- admin_writer: delete_customer tool (cascade: payments → orders → customer)
+GRANT SELECT ON customers, orders, payments TO admin_writer;
+GRANT DELETE ON customers, orders, payments TO admin_writer;
 
 -- Governance tables: application user only
 GRANT ALL ON approval_requests, audit_events TO aegisgov;
@@ -140,6 +144,29 @@ GRANT ALL ON approval_requests, audit_events TO aegisgov;
 -- Sequence grants for INSERT operations
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public
     TO billing_writer, admin_writer;
+
+-- Role membership grants so the gateway can SET LOCAL ROLE (CLAUDE.md §17)
+-- Without these, "SET LOCAL ROLE order_reader" would fail with permission denied.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid WHERE r.rolname = 'order_reader'
+                   AND m.member = (SELECT oid FROM pg_roles WHERE rolname = 'aegisgov')) THEN
+        GRANT order_reader TO aegisgov;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid WHERE r.rolname = 'billing_reader'
+                   AND m.member = (SELECT oid FROM pg_roles WHERE rolname = 'aegisgov')) THEN
+        GRANT billing_reader TO aegisgov;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid WHERE r.rolname = 'billing_writer'
+                   AND m.member = (SELECT oid FROM pg_roles WHERE rolname = 'aegisgov')) THEN
+        GRANT billing_writer TO aegisgov;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid WHERE r.rolname = 'admin_writer'
+                   AND m.member = (SELECT oid FROM pg_roles WHERE rolname = 'aegisgov')) THEN
+        GRANT admin_writer TO aegisgov;
+    END IF;
+END
+$$;
 
 -- ─── Demo Seed Data ─────────────────────────────────────────────────────────
 -- Deterministic data supporting the four mandatory test scenarios:
