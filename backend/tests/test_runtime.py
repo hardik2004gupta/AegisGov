@@ -124,61 +124,117 @@ def test_deletion_request_routed_to_admin_not_billing() -> None:
 
 
 # ─── Handoff Authorization ────────────────────────────────────────────────────
+# Phase 3: allow_handoff is now async and calls OPA (5-arg signature).
+# Tests below are marked `opa` and skipped automatically when OPA is unavailable.
 
 
-def test_analyst_allowed_order_agent() -> None:
+@pytest.mark.opa
+async def test_analyst_allowed_order_agent() -> None:
     from app.governance.policy import policy_service
 
-    assert policy_service.allow_handoff(["analyst"], "order-agent") is True
+    result = await policy_service.allow_handoff(
+        user_id="usr_test", user_roles=["analyst"],
+        agent_id="supervisor", agent_spiffe_id="aegis://agents/supervisor",
+        target_agent="order-agent",
+    )
+    assert result.allow is True
 
 
-def test_analyst_denied_billing_agent() -> None:
+@pytest.mark.opa
+async def test_analyst_denied_billing_agent() -> None:
     from app.governance.policy import policy_service
 
-    assert policy_service.allow_handoff(["analyst"], "billing-agent") is False
+    result = await policy_service.allow_handoff(
+        user_id="usr_test", user_roles=["analyst"],
+        agent_id="supervisor", agent_spiffe_id="aegis://agents/supervisor",
+        target_agent="billing-agent",
+    )
+    assert result.allow is False
 
 
-def test_analyst_denied_admin_agent() -> None:
+@pytest.mark.opa
+async def test_analyst_denied_admin_agent() -> None:
     from app.governance.policy import policy_service
 
-    assert policy_service.allow_handoff(["analyst"], "admin-agent") is False
+    result = await policy_service.allow_handoff(
+        user_id="usr_test", user_roles=["analyst"],
+        agent_id="supervisor", agent_spiffe_id="aegis://agents/supervisor",
+        target_agent="admin-agent",
+    )
+    assert result.allow is False
 
 
-def test_billing_allowed_billing_agent() -> None:
+@pytest.mark.opa
+async def test_billing_allowed_billing_agent() -> None:
     from app.governance.policy import policy_service
 
-    assert policy_service.allow_handoff(["billing"], "billing-agent") is True
+    result = await policy_service.allow_handoff(
+        user_id="usr_test", user_roles=["billing"],
+        agent_id="supervisor", agent_spiffe_id="aegis://agents/supervisor",
+        target_agent="billing-agent",
+    )
+    assert result.allow is True
 
 
-def test_billing_allowed_order_agent() -> None:
+@pytest.mark.opa
+async def test_billing_allowed_order_agent() -> None:
     from app.governance.policy import policy_service
 
-    assert policy_service.allow_handoff(["billing"], "order-agent") is True
+    result = await policy_service.allow_handoff(
+        user_id="usr_test", user_roles=["billing"],
+        agent_id="supervisor", agent_spiffe_id="aegis://agents/supervisor",
+        target_agent="order-agent",
+    )
+    assert result.allow is True
 
 
-def test_billing_denied_admin_agent() -> None:
+@pytest.mark.opa
+async def test_billing_denied_admin_agent() -> None:
     from app.governance.policy import policy_service
 
-    assert policy_service.allow_handoff(["billing"], "admin-agent") is False
+    result = await policy_service.allow_handoff(
+        user_id="usr_test", user_roles=["billing"],
+        agent_id="supervisor", agent_spiffe_id="aegis://agents/supervisor",
+        target_agent="admin-agent",
+    )
+    assert result.allow is False
 
 
-def test_admin_allowed_admin_agent() -> None:
+@pytest.mark.opa
+async def test_admin_allowed_admin_agent() -> None:
     from app.governance.policy import policy_service
 
-    assert policy_service.allow_handoff(["admin"], "admin-agent") is True
+    result = await policy_service.allow_handoff(
+        user_id="usr_test", user_roles=["admin"],
+        agent_id="supervisor", agent_spiffe_id="aegis://agents/supervisor",
+        target_agent="admin-agent",
+    )
+    assert result.allow is True
 
 
-def test_admin_allowed_all_agents() -> None:
+@pytest.mark.opa
+async def test_admin_allowed_all_agents() -> None:
     from app.governance.policy import policy_service
 
     for agent in ("order-agent", "billing-agent", "admin-agent"):
-        assert policy_service.allow_handoff(["admin"], agent) is True
+        result = await policy_service.allow_handoff(
+            user_id="usr_test", user_roles=["admin"],
+            agent_id="supervisor", agent_spiffe_id="aegis://agents/supervisor",
+            target_agent=agent,
+        )
+        assert result.allow is True, f"admin should reach {agent}"
 
 
-def test_empty_roles_denied() -> None:
+async def test_empty_roles_denied() -> None:
+    """Empty roles short-circuit before OPA — no OPA mark needed."""
     from app.governance.policy import policy_service
 
-    assert policy_service.allow_handoff([], "order-agent") is False
+    result = await policy_service.allow_handoff(
+        user_id="usr_test", user_roles=[],
+        agent_id="supervisor", agent_spiffe_id="aegis://agents/supervisor",
+        target_agent="order-agent",
+    )
+    assert result.allow is False
 
 
 async def test_privilege_escalation_denied_e2e() -> None:

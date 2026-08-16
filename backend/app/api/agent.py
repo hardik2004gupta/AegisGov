@@ -6,10 +6,12 @@ The primary agent execution endpoint.
 INVARIANT 2 (CLAUDE.md §26): Authorization derives exclusively from the
 verified Keycloak JWT. Role/identity claims in the request body are ignored.
 
-Phase 2 response status: PROPOSAL_READY, DENIED, BLOCKED, FAILED.
-No tool is executed in Phase 2; the response contains a structured proposal.
-
-Phase 3 will add: COMPLETED, INTERRUPTED_PENDING_APPROVAL.
+Phase 3 response statuses:
+    COMPLETED                    — tool executed successfully
+    INTERRUPTED_PENDING_APPROVAL — HITL triggered; approval_id returned
+    DENIED                       — OPA or handoff denied
+    BLOCKED                      — prompt injection or runtime limit
+    FAILED                       — unexpected graph error
 """
 
 from __future__ import annotations
@@ -21,7 +23,6 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from app.core.identity import AuthenticatedUser, get_current_user
-from app.core.security import ToolProposal
 from app.graph.state import AegisState, initial_state
 from app.graph.workflow import compiled_graph
 
@@ -42,6 +43,8 @@ class AgentRunRequest(BaseModel):
 class GovernanceInfo(BaseModel):
     identity_verified: bool
     policy_decision: str
+    risk_level: Optional[str] = None
+    execution_time_ms: Optional[float] = None
     agent_id: Optional[str] = None
     agent_spiffe_id: Optional[str] = None
 
@@ -52,6 +55,8 @@ class AgentRunResponse(BaseModel):
     trace_id: str
     output: Optional[str] = None
     error: Optional[str] = None
+    approval_id: Optional[str] = None
+    execution_result: Optional[dict[str, Any]] = None
     agent: Optional[dict[str, Any]] = None
     proposal: Optional[dict[str, Any]] = None
     governance: GovernanceInfo
@@ -101,6 +106,7 @@ async def run_agent(
 def _build_response(result: AegisState) -> AgentRunResponse:
     run_status = result.get("status", "FAILED")
 
+    # Proposal info (populated by specialist agents)
     proposal: Optional[dict[str, Any]] = None
     if result.get("proposed_tool"):
         proposal = {
@@ -109,6 +115,7 @@ def _build_response(result: AegisState) -> AgentRunResponse:
             "reason": result.get("proposal_reason"),
         }
 
+    # Agent info (populated by specialist identity)
     agent_info: Optional[dict[str, Any]] = None
     if result.get("agent_id") and result["agent_id"] != "supervisor":
         agent_info = {
@@ -120,6 +127,8 @@ def _build_response(result: AegisState) -> AgentRunResponse:
     governance = GovernanceInfo(
         identity_verified=True,  # guaranteed by get_current_user dependency
         policy_decision=result.get("governance_status", "UNKNOWN"),
+        risk_level=result.get("risk_level"),
+        execution_time_ms=result.get("execution_time_ms"),
         agent_id=result.get("agent_id"),
         agent_spiffe_id=result.get("agent_spiffe_id"),
     )
@@ -130,6 +139,8 @@ def _build_response(result: AegisState) -> AgentRunResponse:
         trace_id=result["trace_id"],
         output=result.get("output"),
         error=result.get("error"),
+        approval_id=result.get("approval_id"),
+        execution_result=result.get("execution_result"),
         agent=agent_info,
         proposal=proposal,
         governance=governance,

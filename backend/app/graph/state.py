@@ -6,8 +6,7 @@ Each node returns a dict of partial updates; LangGraph merges them into state.
 
 Canonical graph (CLAUDE.md §6):
     START → identity_check → input_guardrails → supervisor_router →
-    handoff_authz → specialist_agent → END
-    (Phase 3 extends: specialist_agent → tool_gateway_authz → ...)
+    handoff_authz → specialist_agent → tool_gateway → [execute/hitl] → END
 """
 
 from __future__ import annotations
@@ -48,21 +47,29 @@ class AegisState(TypedDict):
     last_tool_name: Optional[str]
     identical_tool_call_count: int
 
-    # ─── Tool Proposal (Phase 2 output — Phase 3 routes through gateway) ──────
+    # ─── Tool Proposal (specialist output — gateway routes through pipeline) ──
     proposed_tool: Optional[str]
     tool_arguments: Optional[dict[str, Any]]
     proposal_reason: Optional[str]
 
     # ─── Governance ───────────────────────────────────────────────────────────
-    # Values: RUNNING | ALLOWED | DENIED | BLOCKED | PROPOSAL_READY
+    # Values: RUNNING | ALLOWED | DENIED | BLOCKED | PENDING_APPROVAL
     governance_status: str
     block_reason: Optional[str]
+
+    # ─── Phase 3: Gateway Execution Results ──────────────────────────────────
+    risk_level: Optional[str]
+    requires_approval: bool
+    approval_id: Optional[str]
+    execution_result: Optional[dict[str, Any]]
+    execution_time_ms: Optional[float]
 
     # ─── Observability ────────────────────────────────────────────────────────
     trace_id: str
 
     # ─── Output ───────────────────────────────────────────────────────────────
-    # status values: RUNNING | PROPOSAL_READY | DENIED | BLOCKED | FAILED
+    # status: RUNNING | PROPOSAL_READY | COMPLETED | INTERRUPTED_PENDING_APPROVAL
+    #         | DENIED | BLOCKED | FAILED
     output: Optional[str]
     error: Optional[str]
     status: str
@@ -99,6 +106,11 @@ def initial_state(
         proposal_reason=None,
         governance_status="RUNNING",
         block_reason=None,
+        risk_level=None,
+        requires_approval=False,
+        approval_id=None,
+        execution_result=None,
+        execution_time_ms=None,
         trace_id=trace_id or _new_trace_id(),
         output=None,
         error=None,

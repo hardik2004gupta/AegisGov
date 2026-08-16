@@ -220,64 +220,24 @@ def test_frontend_role_in_request_body_ignored(client) -> None:
     assert response.json()["status"] == "DENIED"
 
 
+@pytest.mark.skip(reason="Phase 3 gateway executes tools; PROPOSAL_READY no longer returned. See test_gateway.py and test_hitl.py.")
 def test_proposal_status_is_not_completed(client) -> None:
-    """Phase 2 proposals must NEVER return COMPLETED (no execution yet)."""
-    from tests.conftest import auth_headers
-
-    headers = auth_headers(roles=["billing"])
-    response = client.post(
-        "/api/v1/agent/run",
-        headers=headers,
-        json={"thread_id": "thr_noexec", "message": "issue a $120 refund for order 8829"},
-    )
-    assert response.status_code == 200
-    body = response.json()
-    # Must be PROPOSAL_READY, never COMPLETED (which implies execution)
-    assert body["status"] != "COMPLETED"
-    assert body["status"] == "PROPOSAL_READY"
+    pass
 
 
 # ─── Integration Scenarios ────────────────────────────────────────────────────
 
 
+@pytest.mark.opa
+@pytest.mark.skip(reason="Billing refund execution covered by test_hitl.py::test_low_value_refund_executes_automatically with proper DB reset.")
 async def test_billing_user_refund_integration(client) -> None:
-    """CLAUDE.md §27: billing user → billing-agent → issue_refund proposal.
-
-    This is the primary Phase 2 integration test.
-    Expected: identity_verified=True, agent=billing-agent, tool=issue_refund,
-              status=PROPOSAL_READY, and PostgreSQL payment data UNCHANGED.
-    """
-    from tests.conftest import auth_headers
-
-    headers = auth_headers(
-        user_id="usr_billing",
-        username="billing_user",
-        roles=["billing"],
-    )
-    response = client.post(
-        "/api/v1/agent/run",
-        headers=headers,
-        json={
-            "thread_id": "thr_integration_refund",
-            "message": "Issue a $120 refund for order #8829",
-        },
-    )
-
-    assert response.status_code == 200
-    body = response.json()
-
-    assert body["status"] == "PROPOSAL_READY"
-    assert body["governance"]["identity_verified"] is True
-    assert body["governance"]["agent_id"] == "billing-agent"
-    assert body["proposal"]["tool"] == "issue_refund"
-    assert body["proposal"]["arguments"]["order_id"] == 8829
-    assert body["proposal"]["arguments"]["amount"] == 120.0
-    # The proposal must include the trace_id for observability
-    assert body["trace_id"].startswith("trc_")
+    pass
 
 
+@pytest.mark.opa
+@pytest.mark.db
 async def test_analyst_order_request_integration(client) -> None:
-    """Scenario A: analyst → order-agent → get_order proposal."""
+    """Phase 3: analyst → order-agent → get_order → COMPLETED via gateway."""
     from tests.conftest import auth_headers
 
     headers = auth_headers(roles=["analyst"])
@@ -289,13 +249,16 @@ async def test_analyst_order_request_integration(client) -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "PROPOSAL_READY"
-    assert body["proposal"]["tool"] == "get_order"
-    assert body["proposal"]["arguments"]["order_id"] == 421
+    assert body["status"] == "COMPLETED"
+    assert body["governance"]["identity_verified"] is True
+    assert body["governance"]["risk_level"] == "LOW"
+    assert body["trace_id"].startswith("trc_")
 
 
-async def test_admin_delete_proposal_not_executed(client) -> None:
-    """Scenario C: admin → delete_customer proposal — customer is NOT deleted."""
+@pytest.mark.opa
+@pytest.mark.db
+async def test_admin_delete_pauses_for_approval(client) -> None:
+    """Phase 3: admin → delete_customer → CRITICAL risk → INTERRUPTED_PENDING_APPROVAL."""
     from tests.conftest import auth_headers
 
     headers = auth_headers(roles=["admin"])
@@ -307,6 +270,7 @@ async def test_admin_delete_proposal_not_executed(client) -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "PROPOSAL_READY"
-    assert body["proposal"]["tool"] == "delete_customer"
-    # No execution occurred — Phase 3 gateway required for actual deletion
+    # CRITICAL risk must always pause for human approval — never auto-execute
+    assert body["status"] == "INTERRUPTED_PENDING_APPROVAL"
+    assert body["approval_id"] is not None
+    assert body["governance"]["risk_level"] == "CRITICAL"

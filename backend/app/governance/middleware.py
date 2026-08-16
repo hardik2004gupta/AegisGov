@@ -102,6 +102,19 @@ def check_runtime_limits(state: AegisState) -> dict[str, Any]:
             f"tool call count {state['tool_call_count']} reached limit {settings.max_tool_calls}",
         )
 
+    # Detect identical tool call loops (CLAUDE.md §7)
+    proposed = state.get("proposed_tool")
+    if (
+        proposed
+        and state.get("last_tool_name") == proposed
+        and state["identical_tool_call_count"] >= settings.max_identical_tool_calls
+    ):
+        return _budget_exceeded(
+            state,
+            f"identical tool '{proposed}' called {state['identical_tool_call_count']} times in a row "
+            f"(limit: {settings.max_identical_tool_calls})",
+        )
+
     return {}
 
 

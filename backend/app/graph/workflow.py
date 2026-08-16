@@ -1,23 +1,24 @@
 """
 LangGraph Workflow — AegisGov Execution Graph
 
-Canonical Phase 2 graph (CLAUDE.md §6):
+Phase 3 graph (CLAUDE.md §6):
 
     START
       ↓
-    identity_check       ← identity verified at API boundary; node acknowledges context
+    identity_check       ← JWT verified at API boundary; node logs context
       ↓
     input_guardrails     ← BLOCKED? → audit_block → END
       ↓
     supervisor_router    ← selects specialist agent
       ↓
-    handoff_authz        ← DENIED? → audit_block → END
+    handoff_authz        ← OPA: DENIED? → audit_block → END
       ↓
     specialist_agent     ← dispatches to order/billing/admin agent
-      ↓
-    END
-
-    (Phase 3 extends: specialist_agent → tool_gateway_authz → execute/hitl → END)
+      ↓ [PROPOSAL_READY]
+    tool_gateway         ← SecureToolGateway: 10-stage pipeline
+      ├── ALLOWED         → END  (audit written inside gateway)
+      ├── DENIED/BLOCKED  → audit_block → END
+      └── PENDING_APPROVAL → approval_interrupt → END
 
 Governance checks are first-class graph nodes (CLAUDE.md §6 — non-negotiable).
 """
@@ -33,6 +34,9 @@ from app.agents.admin_agent import admin_agent_node
 from app.agents.billing_agent import billing_agent_node
 from app.agents.order_agent import order_agent_node
 from app.agents.supervisor import supervisor_router_node
+from app.core.security import ToolProposal
+from app.db.session import AsyncSessionLocal
+from app.governance.gateway import gateway
 from app.governance.middleware import check_input_guardrails, check_runtime_limits
 from app.governance.policy import policy_service
 from app.graph.state import AegisState
@@ -46,10 +50,8 @@ logger = logging.getLogger(__name__)
 def _identity_check_node(state: AegisState) -> dict[str, Any]:
     """Acknowledge that identity was verified at the API boundary.
 
-    In Phase 2 the JWT was already validated by get_current_user; the identity
-    context (user_id, username, user_roles) is already present in state.
-    This node exists as a named checkpoint in the graph so Phase 3+ can add
-    additional identity assertions here without changing the graph topology.
+    JWT was already validated by get_current_user; identity context
+    (user_id, username, user_roles) is already present in state.
     """
     logger.info(
         "Identity check — user=%s roles=%s trace_id=%s",
@@ -60,11 +62,11 @@ def _identity_check_node(state: AegisState) -> dict[str, Any]:
     return {}
 
 
-def _handoff_authz_node(state: AegisState) -> dict[str, Any]:
+async def _handoff_authz_node(state: AegisState) -> dict[str, Any]:
     """Evaluate whether the user's roles authorize the selected agent handoff.
 
-    Phase 2: uses PolicyDecisionService with deterministic role-agent mapping.
-    Phase 3: PolicyDecisionService will delegate to OPA (same interface).
+    Phase 3: delegates to OPA via policy_service.allow_handoff().
+    Fail-closed: if OPA is unavailable, DENY.
     """
     target = state.get("selected_agent")
     if not target:
@@ -75,18 +77,25 @@ def _handoff_authz_node(state: AegisState) -> dict[str, Any]:
             "output": "Request denied: no agent could be selected for this request.",
         }
 
-    allowed = policy_service.allow_handoff(state["user_roles"], target)
+    result = await policy_service.allow_handoff(
+        user_id=state["user_id"],
+        user_roles=state["user_roles"],
+        agent_id=state.get("agent_id") or "supervisor",
+        agent_spiffe_id=state.get("agent_spiffe_id") or "aegis://agents/supervisor",
+        target_agent=target,
+    )
 
-    if not allowed:
+    if not result.allow:
         reason = (
             f"Roles {state['user_roles']} are not authorized to hand off to {target}"
         )
         logger.info(
-            "Handoff DENIED user=%s roles=%s target=%s trace_id=%s",
+            "Handoff DENIED user=%s roles=%s target=%s trace_id=%s reason=%s",
             state["username"],
             state["user_roles"],
             target,
             state["trace_id"],
+            result.reason,
         )
         return {
             "governance_status": "DENIED",
@@ -107,10 +116,10 @@ def _handoff_authz_node(state: AegisState) -> dict[str, Any]:
 def _specialist_agent_dispatch(state: AegisState) -> dict[str, Any]:
     """Dispatch to the appropriate specialist agent based on selected_agent.
 
-    The specialist receives the state and returns a ToolProposal embedded in
-    state updates. It MUST NOT call any database function or tool handler.
+    The specialist produces a ToolProposal stored in state.
+    It MUST NOT call any database function or tool handler.
     """
-    # Check runtime limits before handing off to specialist
+    # Check runtime limits before dispatching specialist
     limit_result = check_runtime_limits(state)
     if limit_result:
         return limit_result
@@ -130,11 +139,87 @@ def _specialist_agent_dispatch(state: AegisState) -> dict[str, Any]:
     }
 
 
-def _audit_block_node(state: AegisState) -> dict[str, Any]:
-    """Terminal node for BLOCKED or DENIED executions.
+async def _tool_gateway_node(state: AegisState) -> dict[str, Any]:
+    """Execute the proposed tool through the Secure Tool Gateway.
 
-    Phase 4 will add persistent audit event writes here.
+    Builds a ToolProposal from state, opens a DB session, and invokes
+    the full 10-stage gateway pipeline. Maps GatewayResult back to state.
+
+    INVARIANT 1: Agents never reach this node directly.
     """
+    proposed_tool = state.get("proposed_tool")
+    if not proposed_tool:
+        return {
+            "governance_status": "DENIED",
+            "status": "DENIED",
+            "block_reason": "Specialist produced no tool proposal",
+            "output": "Agent did not produce a tool proposal.",
+        }
+
+    proposal = ToolProposal(
+        tool_name=proposed_tool,
+        arguments=state.get("tool_arguments") or {},
+        agent_id=state.get("agent_id") or "",
+        agent_spiffe_id=state.get("agent_spiffe_id") or "",
+        thread_id=state["thread_id"],
+        reason=state.get("proposal_reason") or "",
+    )
+
+    async with AsyncSessionLocal() as db:
+        result = await gateway.execute(proposal, state, db)
+
+    if result.decision == "ALLOWED":
+        new_tool_count = state["tool_call_count"] + 1
+        last = state.get("last_tool_name")
+        identical = (
+            (state["identical_tool_call_count"] + 1) if last == proposed_tool else 1
+        )
+        return {
+            "governance_status": "ALLOWED",
+            "status": "COMPLETED",
+            "risk_level": result.risk_level,
+            "execution_result": result.result,
+            "execution_time_ms": result.execution_time_ms,
+            "output": _format_tool_result(proposed_tool, result.result),
+            "tool_call_count": new_tool_count,
+            "last_tool_name": proposed_tool,
+            "identical_tool_call_count": identical,
+        }
+
+    if result.decision == "PENDING_APPROVAL":
+        return {
+            "governance_status": "PENDING_APPROVAL",
+            "status": "INTERRUPTED_PENDING_APPROVAL",
+            "risk_level": result.risk_level,
+            "requires_approval": True,
+            "approval_id": result.approval_id,
+            "output": (
+                f"Operation paused for human approval (approval_id={result.approval_id}). "
+                "An authorized admin must review and approve this action."
+            ),
+        }
+
+    # DENIED or BLOCKED
+    return {
+        "governance_status": result.decision,
+        "status": result.decision,
+        "block_reason": result.reason,
+        "output": f"Request {result.decision.lower()}: {result.reason}",
+    }
+
+
+def _approval_interrupt_node(state: AegisState) -> dict[str, Any]:
+    """Terminal node for executions paused awaiting human approval."""
+    logger.info(
+        "Execution paused for HITL approval_id=%s trace_id=%s",
+        state.get("approval_id"),
+        state["trace_id"],
+    )
+    return {}
+
+
+def _audit_block_node(state: AegisState) -> dict[str, Any]:
+    """Terminal node for BLOCKED or DENIED executions."""
     logger.info(
         "Execution ended [%s] reason=%s trace_id=%s",
         state["governance_status"],
@@ -159,6 +244,58 @@ def _route_after_handoff_authz(state: AegisState) -> str:
     return "specialist_agent"
 
 
+def _route_after_specialist(state: AegisState) -> str:
+    gs = state.get("governance_status", "RUNNING")
+    s = state.get("status", "RUNNING")
+    if gs in ("BLOCKED", "DENIED", "FAILED") or s in ("BLOCKED", "DENIED", "FAILED"):
+        return "audit_block"
+    return "tool_gateway"
+
+
+def _route_after_tool_gateway(state: AegisState) -> str:
+    gs = state.get("governance_status", "DENIED")
+    if gs == "ALLOWED":
+        return END
+    if gs == "PENDING_APPROVAL":
+        return "approval_interrupt"
+    return "audit_block"
+
+
+# ─── Output formatting ────────────────────────────────────────────────────────
+
+
+def _format_tool_result(tool_name: str, result: dict | None) -> str:
+    """Produce a human-readable summary of a tool execution result."""
+    if not result:
+        return f"Tool {tool_name!r} executed successfully."
+    if tool_name == "get_order":
+        return (
+            f"Order #{result.get('order_id')}: status={result.get('status')}, "
+            f"amount=${result.get('total_amount', 0):.2f} {result.get('currency', 'USD')}."
+        )
+    if tool_name == "get_customer":
+        return (
+            f"Customer #{result.get('customer_id')}: {result.get('full_name')}, "
+            f"email={result.get('email')}."
+        )
+    if tool_name == "get_payment":
+        return (
+            f"Payment #{result.get('payment_id')} for order #{result.get('order_id')}: "
+            f"amount=${result.get('amount', 0):.2f}, status={result.get('status')}."
+        )
+    if tool_name == "issue_refund":
+        return (
+            f"Refund of ${result.get('refund_amount', 0):.2f} issued for "
+            f"order #{result.get('order_id')}. Status: {result.get('status')}."
+        )
+    if tool_name == "delete_customer":
+        return (
+            f"Customer #{result.get('customer_id')} ({result.get('full_name')}) "
+            f"has been permanently deleted."
+        )
+    return f"Tool {tool_name!r} completed: {result}"
+
+
 # ─── Graph compilation ────────────────────────────────────────────────────────
 
 
@@ -171,6 +308,8 @@ def _build_graph() -> StateGraph:
     g.add_node("supervisor_router", supervisor_router_node)
     g.add_node("handoff_authz", _handoff_authz_node)
     g.add_node("specialist_agent", _specialist_agent_dispatch)
+    g.add_node("tool_gateway", _tool_gateway_node)
+    g.add_node("approval_interrupt", _approval_interrupt_node)
     g.add_node("audit_block", _audit_block_node)
 
     # Wire edges
@@ -187,7 +326,17 @@ def _build_graph() -> StateGraph:
         _route_after_handoff_authz,
         {"audit_block": "audit_block", "specialist_agent": "specialist_agent"},
     )
-    g.add_edge("specialist_agent", END)
+    g.add_conditional_edges(
+        "specialist_agent",
+        _route_after_specialist,
+        {"audit_block": "audit_block", "tool_gateway": "tool_gateway"},
+    )
+    g.add_conditional_edges(
+        "tool_gateway",
+        _route_after_tool_gateway,
+        {END: END, "approval_interrupt": "approval_interrupt", "audit_block": "audit_block"},
+    )
+    g.add_edge("approval_interrupt", END)
     g.add_edge("audit_block", END)
 
     return g

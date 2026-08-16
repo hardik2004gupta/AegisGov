@@ -130,9 +130,9 @@ GRANT SELECT ON orders, payments TO billing_reader;
 GRANT SELECT ON orders, payments TO billing_writer;
 GRANT UPDATE ON payments TO billing_writer;
 
--- admin_writer: delete_customer tool
-GRANT SELECT ON customers, orders TO admin_writer;
-GRANT DELETE ON customers TO admin_writer;
+-- admin_writer: delete_customer tool (cascade: payments → orders → customer)
+GRANT SELECT ON customers, orders, payments TO admin_writer;
+GRANT DELETE ON customers, orders, payments TO admin_writer;
 
 -- Governance tables: application user only
 GRANT ALL ON approval_requests, audit_events TO aegisgov;
@@ -140,6 +140,29 @@ GRANT ALL ON approval_requests, audit_events TO aegisgov;
 -- Sequence grants for INSERT operations
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public
     TO billing_writer, admin_writer;
+
+-- Role membership grants so the gateway can SET LOCAL ROLE (CLAUDE.md §17)
+-- Without these, "SET LOCAL ROLE order_reader" would fail with permission denied.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid WHERE r.rolname = 'order_reader'
+                   AND m.member = (SELECT oid FROM pg_roles WHERE rolname = 'aegisgov')) THEN
+        GRANT order_reader TO aegisgov;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid WHERE r.rolname = 'billing_reader'
+                   AND m.member = (SELECT oid FROM pg_roles WHERE rolname = 'aegisgov')) THEN
+        GRANT billing_reader TO aegisgov;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid WHERE r.rolname = 'billing_writer'
+                   AND m.member = (SELECT oid FROM pg_roles WHERE rolname = 'aegisgov')) THEN
+        GRANT billing_writer TO aegisgov;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid WHERE r.rolname = 'admin_writer'
+                   AND m.member = (SELECT oid FROM pg_roles WHERE rolname = 'aegisgov')) THEN
+        GRANT admin_writer TO aegisgov;
+    END IF;
+END
+$$;
 
 -- ─── Demo Seed Data ─────────────────────────────────────────────────────────
 -- Deterministic data supporting the four mandatory test scenarios:
