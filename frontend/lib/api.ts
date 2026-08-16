@@ -15,6 +15,59 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+// ── Agent run (Phase 2+) ──────────────────────────────────────────────────────
+
+export interface GovernanceInfo {
+  identity_verified: boolean;
+  policy_decision: string;
+  agent_id?: string;
+  agent_spiffe_id?: string;
+}
+
+export interface AgentProposal {
+  tool: string;
+  arguments: Record<string, unknown>;
+  reason?: string;
+}
+
+export interface AgentInfo {
+  id: string;
+  spiffe_id?: string;
+  capabilities?: string[];
+}
+
+export type AgentRunStatus =
+  | "PROPOSAL_READY"
+  | "DENIED"
+  | "BLOCKED"
+  | "FAILED"
+  | "COMPLETED"
+  | "INTERRUPTED_PENDING_APPROVAL";
+
+export interface AgentRunResponse {
+  thread_id: string;
+  status: AgentRunStatus;
+  trace_id: string;
+  output?: string;
+  error?: string;
+  agent?: AgentInfo;
+  proposal?: AgentProposal;
+  governance: GovernanceInfo;
+}
+
+export const agentRun = {
+  submit: (
+    message: string,
+    threadId: string,
+    bearerToken: string,
+  ): Promise<AgentRunResponse> =>
+    request<AgentRunResponse>("/api/v1/agent/run", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${bearerToken}` },
+      body: JSON.stringify({ thread_id: threadId, message }),
+    }),
+};
+
 // ── Health ────────────────────────────────────────────────────────────────────
 
 export interface HealthResponse {

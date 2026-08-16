@@ -21,9 +21,9 @@ python-jose[cryptography]>=3.3.0,<4.0.0
 cryptography>=42.0.0,<44.0.0
 
 # ─── Agent Runtime (Phase 2) ─────────────────────────────────────────────────
-# langgraph>=0.2.0,<1.0.0
-# langchain>=0.2.0,<1.0.0
-# langchain-openai>=0.1.0,<1.0.0
+langgraph>=0.2.0,<1.0.0
+langchain-core>=0.2.0,<1.0.0
+# langchain-openai>=0.1.0  # uncomment and set OPENAI_API_KEY to enable LLM routing
 
 # ─── Observability (Phase 4) ──────────────────────────────────────────────────
 # langfuse>=2.0.0,<3.0.0

@@ -45,7 +45,7 @@ Eight invariants enforced at all times (see `CLAUDE.md §8`):
 |-------|-------|--------|
 | 0 | Engineering contract (`CLAUDE.md`) | ✅ Complete |
 | 1 | Foundation & Infrastructure | ✅ Complete |
-| 2 | Identity + LangGraph agent runtime | Pending |
+| 2 | Identity + LangGraph agent runtime | ✅ Complete |
 | 3 | Secure Tool Gateway + OPA rules | Pending |
 | 4 | Audit + observability | Pending |
 | 5 | Production UI | Pending |
