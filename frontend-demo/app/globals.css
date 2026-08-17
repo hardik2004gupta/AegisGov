@@ -1,0 +1,20 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  font-size: 14px;
+}
+
+body {
+  background: #f8fafc;
+  color: #1e293b;
+}
+
+.font-mono {
+  font-family: ui-monospace, "SFMono-Regular", "Menlo", "Monaco", "Consolas", monospace;
+}

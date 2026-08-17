@@ -1,0 +1,55 @@
+import type { Tool } from "@/lib/types";
+
+export const TOOLS: Tool[] = [
+  {
+    name: "get_order",
+    description: "Retrieve order information by order ID.",
+    risk: "LOW",
+    requiresApproval: false,
+    dbRole: "order_reader",
+    agents: ["order-agent", "billing-agent"],
+    schema: { order_id: "PositiveInt" },
+  },
+  {
+    name: "get_customer",
+    description: "Retrieve customer profile and contact information.",
+    risk: "LOW",
+    requiresApproval: false,
+    dbRole: "order_reader",
+    agents: ["order-agent", "admin-agent"],
+    schema: { customer_id: "PositiveInt" },
+  },
+  {
+    name: "get_payment",
+    description: "Retrieve payment details for an order.",
+    risk: "MEDIUM",
+    requiresApproval: false,
+    dbRole: "billing_reader",
+    agents: ["billing-agent"],
+    schema: { order_id: "PositiveInt" },
+  },
+  {
+    name: "issue_refund",
+    description: "Issue a refund against a completed order.",
+    risk: "HIGH",
+    requiresApproval: "conditional",
+    approvalCondition: "amount > $500",
+    dbRole: "billing_writer",
+    agents: ["billing-agent"],
+    schema: {
+      order_id: "PositiveInt",
+      amount: "float (0 < amount ≤ 5000)",
+      reason: "str (5–255 chars)",
+    },
+  },
+  {
+    name: "delete_customer",
+    description: "Permanently delete a customer record from the system.",
+    risk: "CRITICAL",
+    requiresApproval: true,
+    approvalCondition: "always",
+    dbRole: "admin_writer",
+    agents: ["admin-agent"],
+    schema: { customer_id: "PositiveInt" },
+  },
+];
